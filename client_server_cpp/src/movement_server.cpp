@@ -47,17 +47,25 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   double current_x_;
+  double current_y_;
+  double current_theta_;
 
   void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
   {
     current_x_ = msg->pose.pose.position.x;
+    current_y_ = msg->pose.pose.position.y;
+    // Assuming the orientation is represented as a quaternion
+    double siny_cosp = 2.0 * (msg->pose.pose.orientation.w * msg->pose.pose.orientation.z + msg->pose.pose.orientation.x * msg->pose.pose.orientation.y);
+    double cosy_cosp = 1.0 - 2.0 * (msg->pose.pose.orientation.y * msg->pose.pose.orientation.y + msg->pose.pose.orientation.z * msg->pose.pose.orientation.z);
+    current_theta_ = std::atan2(siny_cosp, cosy_cosp);
   }
 
   rclcpp_action::GoalResponse handle_goal(
     const rclcpp_action::GoalUUID & /*uuid*/,
     std::shared_ptr<const Movement::Goal> goal)
   {
-    RCLCPP_INFO(this->get_logger(), "Goal received: x = %.2f", goal->desired_position);
+    RCLCPP_INFO(this->get_logger(), "Goal received: x = %.2f, y = %.2f, theta = %.2f", 
+    goal->desired_x, goal->desired_y, goal->desired_theta);
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }
 
@@ -73,50 +81,122 @@ private:
     std::thread{std::bind(&MovementServer::execute, this, std::placeholders::_1), goal_handle}.detach();
   }
 
+  double normalize_angle(double angle)
+  {
+    while (angle > M_PI) angle -= 2.0 * M_PI;
+    while (angle < -M_PI) angle += 2.0 * M_PI;
+    return angle;
+  }
+
+  void stop_robot()
+  {
+    auto cmd = geometry_msgs::msg::Twist();
+    cmd.linear.x = 0.0;
+    cmd.angular.z = 0.0;
+    cmd_pub_->publish(cmd);
+  }
+
+  bool check_cancel(const std::shared_ptr<GoalHandleMovement> goal_handle)
+  {
+    if (goal_handle->is_canceling()) {
+      RCLCPP_WARN(this->get_logger(), "Cancel requested, stopping execution");
+      stop_robot();
+
+      auto result = std::make_shared<Movement::Result>();
+      result->result_x = current_x_;
+      result->result_y = current_y_;
+      result->result_theta = current_theta_;
+      goal_handle->canceled(result);
+      RCLCPP_INFO(this->get_logger(), "Goal canceled at x = %.2f, y = %.2f, theta = %.2f",
+        current_x_, current_y_, current_theta_);
+      return true;
+    }
+    return false;
+  }
+
   void execute(const std::shared_ptr<GoalHandleMovement> goal_handle)
   {
-    double desired_x = goal_handle->get_goal()->desired_position;
+    double desired_x = goal_handle->get_goal()->desired_x;
+    double desired_y = goal_handle->get_goal()->desired_y;
+    double desired_theta = goal_handle->get_goal()->desired_theta;
+
     auto feedback = std::make_shared<Movement::Feedback>();
     auto cmd = geometry_msgs::msg::Twist();
     rclcpp::Rate rate(10);
 
+    // Phase 1: Rotate toward the target position
     while (rclcpp::ok()) {
-      if (goal_handle->is_canceling()) {
-        RCLCPP_WARN(this->get_logger(), "Cancel requested, stopping execution");
-        cmd.linear.x = 0.0;
-        cmd_pub_->publish(cmd);
+      if (check_cancel(goal_handle)) return;
 
-        auto result = std::make_shared<Movement::Result>();
-        result->result = current_x_;
-        goal_handle->canceled(result);
-        RCLCPP_INFO(this->get_logger(), "Goal canceled at x = %.2f", current_x_);
-        return;
-      }
+      double dx = desired_x - current_x_;
+      double dy = desired_y - current_y_;
+      double distance = std::sqrt(dx * dx + dy * dy);
+      double target_angle = std::atan2(dy, dx);
+      double angle_error = normalize_angle(target_angle - current_theta_);
 
-      double remaining = desired_x - current_x_;
-      feedback->remaining = remaining;
+      feedback->remaining_distance = distance;
+      feedback->remaining_angle = std::abs(angle_error);
       goal_handle->publish_feedback(feedback);
 
-      if (std::abs(remaining) < 0.1) {
-        break;
-      }
+      if (std::abs(angle_error) < 0.05 || distance < 0.1) break;
 
-      // Proportional speed, clamped to [-1.0, 1.0]
-      double speed = std::max(-1.0, std::min(1.0, 0.5 * remaining));
-      cmd.linear.x = speed;
+      cmd.linear.x = 0.0;
+      cmd.angular.z = std::max(-1.0, std::min(1.0, 1.5 * angle_error));
       cmd_pub_->publish(cmd);
+      rate.sleep();
+    }
 
+    // Phase 2: Drive toward the target position
+    while (rclcpp::ok()) {
+      if (check_cancel(goal_handle)) return;
+
+      double dx = desired_x - current_x_;
+      double dy = desired_y - current_y_;
+      double distance = std::sqrt(dx * dx + dy * dy);
+      double target_angle = std::atan2(dy, dx);
+      double angle_error = normalize_angle(target_angle - current_theta_);
+
+      feedback->remaining_distance = distance;
+      feedback->remaining_angle = std::abs(normalize_angle(desired_theta - current_theta_));
+      goal_handle->publish_feedback(feedback);
+
+      if (distance < 0.1) break;
+
+      double speed = std::max(-1.0, std::min(1.0, 0.5 * distance));
+      cmd.linear.x = speed;
+      cmd.angular.z = std::max(-1.0, std::min(1.0, 1.5 * angle_error));
+      cmd_pub_->publish(cmd);
+      rate.sleep();
+    }
+
+    // Phase 3: Rotate to the desired final orientation
+    while (rclcpp::ok()) {
+      if (check_cancel(goal_handle)) return;
+
+      double angle_error = normalize_angle(desired_theta - current_theta_);
+
+      feedback->remaining_distance = 0.0;
+      feedback->remaining_angle = std::abs(angle_error);
+      goal_handle->publish_feedback(feedback);
+
+      if (std::abs(angle_error) < 0.05) break;
+
+      cmd.linear.x = 0.0;
+      cmd.angular.z = std::max(-1.0, std::min(1.0, 1.5 * angle_error));
+      cmd_pub_->publish(cmd);
       rate.sleep();
     }
 
     // Stop the robot
-    cmd.linear.x = 0.0;
-    cmd_pub_->publish(cmd);
+    stop_robot();
 
     auto result = std::make_shared<Movement::Result>();
-    result->result = current_x_;
+    result->result_x = current_x_;
+    result->result_y = current_y_;
+    result->result_theta = current_theta_;
     goal_handle->succeed(result);
-    RCLCPP_INFO(this->get_logger(), "Goal reached at x = %.2f", current_x_);
+    RCLCPP_INFO(this->get_logger(), "Goal reached at x = %.2f, y = %.2f, theta = %.2f",
+      current_x_, current_y_, current_theta_);
   }
 };
 
