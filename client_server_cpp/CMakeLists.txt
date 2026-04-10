@@ -21,8 +21,8 @@ ament_target_dependencies(movement_server
   actions_env
 )
 
-add_executable(movement_client src/movement_client.cpp)
-ament_target_dependencies(movement_client
+add_executable(movement_ui src/movement_ui.cpp)
+ament_target_dependencies(movement_ui
   rclcpp
   rclcpp_action
   actions_env
@@ -30,7 +30,7 @@ ament_target_dependencies(movement_client
 
 install(TARGETS
   movement_server
-  movement_client
+  movement_ui
   DESTINATION lib/${PROJECT_NAME}
 )
 

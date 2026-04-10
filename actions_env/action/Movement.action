@@ -1,5 +1,10 @@
-float32 desired_position
+float32 desired_x
+float32 desired_y
+float32 desired_theta 
 ---
-float32 result
+float32 result_x
+float32 result_y
+float32 result_theta
 ---
-float32 remaining
+float32 remaining_distance
+float32 remaining_angle

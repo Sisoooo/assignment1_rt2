@@ -21,9 +21,11 @@ public:
     action_client_ = rclcpp_action::create_client<Movement>(this, "movement");
   }
 
-  void send_goal(double desired_x)
+  void send_goal(double desired_x, double desired_y, double desired_theta)
   {
     desired_x_ = desired_x;
+    desired_y_ = desired_y;
+    desired_theta_ = desired_theta;
     cancel_sent_ = false;
     goal_handle_ = nullptr;
 
@@ -31,9 +33,11 @@ public:
     action_client_->wait_for_action_server();
 
     auto goal_msg = Movement::Goal();
-    goal_msg.desired_position = desired_x;
+    goal_msg.desired_x = desired_x;
+    goal_msg.desired_y = desired_y;
+    goal_msg.desired_theta = desired_theta;
 
-    RCLCPP_INFO(this->get_logger(), "Sending goal: x = %.2f", desired_x);
+    RCLCPP_INFO(this->get_logger(), "Sending goal: x = %.2f, y = %.2f, theta = %.2f", desired_x, desired_y, desired_theta);
 
     auto send_goal_options = rclcpp_action::Client<Movement>::SendGoalOptions();
     send_goal_options.goal_response_callback =
@@ -50,6 +54,8 @@ private:
   rclcpp_action::Client<Movement>::SharedPtr action_client_;
   GoalHandleMovement::SharedPtr goal_handle_;
   double desired_x_;
+  double desired_y_;
+  double desired_theta_;
   bool cancel_sent_;
 
   void goal_response_callback(const GoalHandleMovement::SharedPtr & goal_handle)
@@ -66,15 +72,15 @@ private:
     GoalHandleMovement::SharedPtr /*goal_handle*/,
     const std::shared_ptr<const Movement::Feedback> feedback)
   {
-    RCLCPP_INFO(this->get_logger(), "Remaining distance: %.2f", feedback->remaining);
+    RCLCPP_INFO(this->get_logger(), "Remaining distance: %.2f, angle: %.2f", feedback->remaining_distance, feedback->remaining_angle);
 
     if (cancel_sent_ || !goal_handle_) {
       return;
     }
 
-    if (desired_x_ > 10.0 || desired_x_ < -10.0) {
+    if ((desired_x_ > 10.0 || desired_x_ < -10.0) || (desired_y_ > 10.0 || desired_y_ < -10.0)) {
       cancel_sent_ = true;
-      RCLCPP_WARN(this->get_logger(), "Goal position is outside [-10, 10], cancelling goal...");
+      RCLCPP_WARN(this->get_logger(), "Goal position is outside the given environment, cancelling goal...");
       auto cancel_future = action_client_->async_cancel_goal(goal_handle_);
     }
   }
@@ -83,13 +89,15 @@ private:
   {
     switch (result.code) {
       case rclcpp_action::ResultCode::SUCCEEDED:
-        RCLCPP_INFO(this->get_logger(), "Final position: x = %.2f", result.result->result);
+        RCLCPP_INFO(this->get_logger(), "Final position: x = %.2f, y = %.2f, theta = %.2f", 
+        result.result->result_x, result.result->result_y, result.result->result_theta);
         break;
       case rclcpp_action::ResultCode::ABORTED:
         RCLCPP_WARN(this->get_logger(), "Goal aborted");
         break;
       case rclcpp_action::ResultCode::CANCELED:
-        RCLCPP_INFO(this->get_logger(), "Goal canceled at x = %.2f", result.result->result);
+        RCLCPP_INFO(this->get_logger(), "Goal canceled at x = %.2f, y = %.2f, theta = %.2f", 
+        result.result->result_x, result.result->result_y, result.result->result_theta);
         break;
       default:
         RCLCPP_ERROR(this->get_logger(), "Unknown result code");
@@ -98,18 +106,3 @@ private:
     rclcpp::shutdown();
   }
 };
-
-int main(int argc, char ** argv)
-{
-  rclcpp::init(argc, argv);
-  auto client = std::make_shared<MovementClient>();
-
-  double desired_x;
-  std::cout << "Enter desired x position: ";
-  std::cin >> desired_x;
-
-  client->send_goal(desired_x);
-
-  rclcpp::spin(client);
-  return 0;
-}
