@@ -8,6 +8,9 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "actions_env/action/movement.hpp"
+#include "geometry_msgs/msg/transform_stamped.hpp"
+#include "tf2/LinearMath/Quaternion.hpp"
+#include "tf2_ros/static_transform_broadcaster.hpp"
 
 class MovementClient : public rclcpp::Node
 {
@@ -16,10 +19,13 @@ public:
   using GoalHandleMovement = rclcpp_action::ClientGoalHandle<Movement>;
 
   MovementClient()
-  : Node("movement_client"), cancel_sent_(false)
+  : Node("movement_client"), cancel_sent_(false), goal_done_(false)
   {
     action_client_ = rclcpp_action::create_client<Movement>(this, "movement");
+    tf_static_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
   }
+
+  bool is_goal_done() const { return goal_done_; }
 
   void send_goal(double desired_x, double desired_y, double desired_theta)
   {
@@ -27,7 +33,11 @@ public:
     desired_y_ = desired_y;
     desired_theta_ = desired_theta;
     cancel_sent_ = false;
+    goal_done_ = false;
     goal_handle_ = nullptr;
+
+    // Broadcast the goal as a tf2 static frame "goal_frame" relative to "odom"
+    broadcast_goal_frame(desired_x, desired_y, desired_theta);
 
     RCLCPP_INFO(this->get_logger(), "Waiting for action server...");
     action_client_->wait_for_action_server();
@@ -53,10 +63,34 @@ public:
 private:
   rclcpp_action::Client<Movement>::SharedPtr action_client_;
   GoalHandleMovement::SharedPtr goal_handle_;
+  std::shared_ptr<tf2_ros::StaticTransformBroadcaster> tf_static_broadcaster_;
   double desired_x_;
   double desired_y_;
   double desired_theta_;
   bool cancel_sent_;
+  bool goal_done_;
+
+  void broadcast_goal_frame(double x, double y, double theta)
+  {
+    geometry_msgs::msg::TransformStamped t;
+    t.header.stamp = this->get_clock()->now();
+    t.header.frame_id = "odom";
+    t.child_frame_id = "goal_frame";
+
+    t.transform.translation.x = x;
+    t.transform.translation.y = y;
+    t.transform.translation.z = 0.0;
+
+    tf2::Quaternion q;
+    q.setRPY(0.0, 0.0, theta);
+    t.transform.rotation.x = q.x();
+    t.transform.rotation.y = q.y();
+    t.transform.rotation.z = q.z();
+    t.transform.rotation.w = q.w();
+
+    tf_static_broadcaster_->sendTransform(t);
+    RCLCPP_INFO(this->get_logger(), "Broadcast goal_frame at x=%.2f, y=%.2f, theta=%.2f", x, y, theta);
+  }
 
   void goal_response_callback(const GoalHandleMovement::SharedPtr & goal_handle)
   {
@@ -103,6 +137,6 @@ private:
         RCLCPP_ERROR(this->get_logger(), "Unknown result code");
         break;
     }
-    rclcpp::shutdown();
+    goal_done_ = true;
   }
 };

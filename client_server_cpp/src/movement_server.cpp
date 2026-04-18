@@ -4,10 +4,17 @@
 #include <cmath>
 
 #include "rclcpp/rclcpp.hpp"
-#include "rclcpp_action/rclcpp_action.hpp"
+#include "rclcpp_action/rclcpp_action.hpp" 
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "actions_env/action/movement.hpp"
+#include "tf2/exceptions.hpp"
+#include "tf2/LinearMath/Quaternion.hpp"
+#include "tf2/LinearMath/Matrix3x3.hpp"
+#include "tf2_ros/transform_listener.hpp"
+#include "tf2_ros/transform_broadcaster.hpp"
+#include "tf2_ros/buffer.hpp"
+#include "geometry_msgs/msg/transform_stamped.hpp"
 
 class MovementServer : public rclcpp::Node
 {
@@ -16,7 +23,7 @@ public:
   using GoalHandleMovement = rclcpp_action::ServerGoalHandle<Movement>;
 
   MovementServer()
-  : Node("movement_server"), current_x_(0.0)
+  : Node("movement_server"), current_x_(0.0), current_y_(0.0), current_theta_(0.0)
   {
     auto cb_group = this->create_callback_group(
       rclcpp::CallbackGroupType::Reentrant);
@@ -34,6 +41,12 @@ public:
 
     cmd_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
 
+    // Initialize tf2 buffer, listener, and broadcaster
+    tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+    tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+
+    // Keep odom subscription for reporting current pose in results/cancellation
     rclcpp::SubscriptionOptions sub_options;
     sub_options.callback_group = cb_group;
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
@@ -46,6 +59,9 @@ private:
   rclcpp_action::Server<Movement>::SharedPtr action_server_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   double current_x_;
   double current_y_;
   double current_theta_;
@@ -54,10 +70,44 @@ private:
   {
     current_x_ = msg->pose.pose.position.x;
     current_y_ = msg->pose.pose.position.y;
-    // Assuming the orientation is represented as a quaternion
     double siny_cosp = 2.0 * (msg->pose.pose.orientation.w * msg->pose.pose.orientation.z + msg->pose.pose.orientation.x * msg->pose.pose.orientation.y);
     double cosy_cosp = 1.0 - 2.0 * (msg->pose.pose.orientation.y * msg->pose.pose.orientation.y + msg->pose.pose.orientation.z * msg->pose.pose.orientation.z);
     current_theta_ = std::atan2(siny_cosp, cosy_cosp);
+
+    // Broadcast odom -> base_footprint transform to connect the TF trees
+    geometry_msgs::msg::TransformStamped odom_tf;
+    odom_tf.header.stamp = msg->header.stamp;
+    odom_tf.header.frame_id = "odom";
+    odom_tf.child_frame_id = "base_footprint";
+    odom_tf.transform.translation.x = msg->pose.pose.position.x;
+    odom_tf.transform.translation.y = msg->pose.pose.position.y;
+    odom_tf.transform.translation.z = msg->pose.pose.position.z;
+    odom_tf.transform.rotation = msg->pose.pose.orientation;
+    tf_broadcaster_->sendTransform(odom_tf);
+  }
+
+  // Look up the transform from base_link to goal_frame using tf2.
+  // Returns true on success, filling dx, dy, distance, and angle_to_goal.
+  bool lookup_goal_transform(double & dx, double & dy, double & distance, double & angle_to_goal)
+  {
+    geometry_msgs::msg::TransformStamped t;
+    try {
+      t = tf_buffer_->lookupTransform("base_link", "goal_frame", tf2::TimePointZero);
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN(this->get_logger(), "Could not get transform to goal_frame: %s", ex.what());
+      return false;
+    }
+    dx = t.transform.translation.x;
+    dy = t.transform.translation.y;
+    distance = std::sqrt(dx * dx + dy * dy);
+    angle_to_goal = std::atan2(dy, dx);
+    return true;
+  }
+
+  // Get the remaining orientation error between current yaw and desired theta.
+  double get_remaining_yaw(double desired_theta)
+  {
+    return normalize_angle(desired_theta - current_theta_);
   }
 
   rclcpp_action::GoalResponse handle_goal(
@@ -116,64 +166,45 @@ private:
 
   void execute(const std::shared_ptr<GoalHandleMovement> goal_handle)
   {
-    double desired_x = goal_handle->get_goal()->desired_x;
-    double desired_y = goal_handle->get_goal()->desired_y;
     double desired_theta = goal_handle->get_goal()->desired_theta;
 
     auto feedback = std::make_shared<Movement::Feedback>();
     auto cmd = geometry_msgs::msg::Twist();
     rclcpp::Rate rate(10);
 
-    // Phase 1: Rotate toward the target position
+    // Phase 1: Drive toward the target position using tf2 lookup (blended rotation + translation)
     while (rclcpp::ok()) {
       if (check_cancel(goal_handle)) return;
 
-      double dx = desired_x - current_x_;
-      double dy = desired_y - current_y_;
-      double distance = std::sqrt(dx * dx + dy * dy);
-      double target_angle = std::atan2(dy, dx);
-      double angle_error = normalize_angle(target_angle - current_theta_);
+      double dx, dy, distance, angle_to_goal;
+      if (!lookup_goal_transform(dx, dy, distance, angle_to_goal)) {
+        rate.sleep();
+        continue;
+      }
 
       feedback->remaining_distance = distance;
-      feedback->remaining_angle = std::abs(angle_error);
-      goal_handle->publish_feedback(feedback);
-
-      if (std::abs(angle_error) < 0.05 || distance < 0.1) break;
-
-      cmd.linear.x = 0.0;
-      cmd.angular.z = std::max(-1.0, std::min(1.0, 1.5 * angle_error));
-      cmd_pub_->publish(cmd);
-      rate.sleep();
-    }
-
-    // Phase 2: Drive toward the target position
-    while (rclcpp::ok()) {
-      if (check_cancel(goal_handle)) return;
-
-      double dx = desired_x - current_x_;
-      double dy = desired_y - current_y_;
-      double distance = std::sqrt(dx * dx + dy * dy);
-      double target_angle = std::atan2(dy, dx);
-      double angle_error = normalize_angle(target_angle - current_theta_);
-
-      feedback->remaining_distance = distance;
-      feedback->remaining_angle = std::abs(normalize_angle(desired_theta - current_theta_));
+      feedback->remaining_angle = std::abs(get_remaining_yaw(desired_theta));
       goal_handle->publish_feedback(feedback);
 
       if (distance < 0.1) break;
 
-      double speed = std::max(-1.0, std::min(1.0, 0.5 * distance));
+      // Scale linear speed down when heading error is large, so the robot
+      // curves toward the goal rather than driving then turning
+      double heading_factor = std::cos(angle_to_goal);  // 1 when aligned, 0 at 90°, -1 when backwards
+      double speed = 0.5 * distance * std::max(0.0, heading_factor);
+      speed = std::min(speed, 1.0);
+
       cmd.linear.x = speed;
-      cmd.angular.z = std::max(-1.0, std::min(1.0, 1.5 * angle_error));
+      cmd.angular.z = std::max(-1.0, std::min(1.0, 1.5 * angle_to_goal));
       cmd_pub_->publish(cmd);
       rate.sleep();
     }
 
-    // Phase 3: Rotate to the desired final orientation
+    // Phase 2: Rotate to the desired final orientation
     while (rclcpp::ok()) {
       if (check_cancel(goal_handle)) return;
 
-      double angle_error = normalize_angle(desired_theta - current_theta_);
+      double angle_error = get_remaining_yaw(desired_theta);
 
       feedback->remaining_distance = 0.0;
       feedback->remaining_angle = std::abs(angle_error);
