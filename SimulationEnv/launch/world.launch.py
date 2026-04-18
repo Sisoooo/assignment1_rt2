@@ -13,7 +13,7 @@ def generate_launch_description():
         description='Name of the Gazebo world file to load'
     )
 
-    pkg_bme_gazebo_sensors = get_package_share_directory('bme_gazebo_sensors')
+    pkg_bme_gazebo_sensors = get_package_share_directory('SimulationEnv')
     pkg_ros_gz_sim = get_package_share_directory('ros_gz_sim')
 
 

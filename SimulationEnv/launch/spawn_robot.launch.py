@@ -9,7 +9,7 @@ from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
 
-    pkg_bme_gazebo_sensors = get_package_share_directory('bme_gazebo_sensors')
+    pkg_bme_gazebo_sensors = get_package_share_directory('SimulationEnv')
 
     gazebo_models_path, ignore_last_dir = os.path.split(pkg_bme_gazebo_sensors)
     os.environ["GZ_SIM_RESOURCE_PATH"] = os.pathsep + gazebo_models_path
