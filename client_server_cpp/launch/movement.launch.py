@@ -1,15 +1,27 @@
 from launch import LaunchDescription
-from launch_ros.actions import Node
+from launch_ros.actions import ComposableNodeContainer
+from launch_ros.descriptions import ComposableNode
 from launch.actions import ExecuteProcess
 
 
 def generate_launch_description():
-    movement_server = Node(
-        package='client_server_cpp',
-        executable='movement_server',
-        name='movement_server',
-        output='screen',
-        parameters=[{'use_sim_time': True}],
+    container = ComposableNodeContainer(
+        name='movement_container',
+        namespace='',
+        package='rclcpp_components',
+        executable='component_container',
+        composable_node_descriptions=[
+            ComposableNode(
+                package='client_server_cpp',
+                plugin='client_server_cpp::MovementServer',
+                name='movement_server'
+            ),
+            ComposableNode(
+                package='client_server_cpp',
+                plugin='client_server_cpp::MovementClient',
+                name='movement_client'
+            ),
+        ],
     )
 
     movement_ui = ExecuteProcess(
@@ -20,7 +32,4 @@ def generate_launch_description():
         output='screen',
     )
 
-    return LaunchDescription([
-        movement_server,
-        movement_ui,
-    ])
+    return LaunchDescription([container, movement_ui])
