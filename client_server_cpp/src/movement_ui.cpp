@@ -1,13 +1,19 @@
-#include "movement_client.cpp"
+#include <memory>
+#include <iostream>
+#include <thread>
+
+#include "rclcpp/rclcpp.hpp"
+#include "geometry_msgs/msg/pose2_d.hpp"
 
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  auto client = std::make_shared<MovementClient>();
+  auto node = std::make_shared<rclcpp::Node>("movement_ui");
+  auto goal_pub = node->create_publisher<geometry_msgs::msg::Pose2D>("goal_input", 10);
 
   // Spin in a background thread so callbacks are processed while we prompt
-  std::thread spin_thread([&client]() {
-    rclcpp::spin(client);
+  std::thread spin_thread([&node]() {
+    rclcpp::spin(node);
   });
 
   while (rclcpp::ok()) {
@@ -20,13 +26,14 @@ int main(int argc, char ** argv)
     std::cout << "Enter desired theta (orientation in radians): ";
     if (!(std::cin >> desired_theta)) break;
 
-    client->send_goal(desired_x, desired_y, desired_theta);
+    auto msg = geometry_msgs::msg::Pose2D();
+    msg.x = desired_x;
+    msg.y = desired_y;
+    msg.theta = desired_theta;
+    goal_pub->publish(msg);
 
-    // Wait until the goal completes (succeeded, canceled, or aborted)
-    rclcpp::Rate wait_rate(10);
-    while (rclcpp::ok() && !client->is_goal_done()) {
-      wait_rate.sleep();
-    }
+    RCLCPP_INFO(node->get_logger(), "Published goal: x = %.2f, y = %.2f, theta = %.2f",
+      desired_x, desired_y, desired_theta);
   }
 
   rclcpp::shutdown();

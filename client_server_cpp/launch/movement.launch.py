@@ -26,7 +26,7 @@ def generate_launch_description():
 
     movement_ui = ExecuteProcess(
         cmd=[
-            'xterm', '-hold', '-e',
+            'xterm', '-hold', '-T', 'Movement window', '-e',
             'ros2', 'run', 'client_server_cpp', 'movement_ui',
         ],
         output='screen',
