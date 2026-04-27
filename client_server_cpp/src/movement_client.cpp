@@ -10,6 +10,7 @@
 #include "actions_env/action/movement.hpp"
 #include "geometry_msgs/msg/pose2_d.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "tf2/LinearMath/Quaternion.hpp"
 #include "tf2_ros/static_transform_broadcaster.hpp"
 
@@ -29,17 +30,34 @@ namespace client_server_cpp{
         goal_sub_ = this->create_subscription<geometry_msgs::msg::Pose2D>(
           "goal_input", 10,
           std::bind(&MovementClient::goal_input_callback, this, std::placeholders::_1));
+
+        cancel_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+          "cancel_goal", 10,
+          std::bind(&MovementClient::cancel_goal_callback, this, std::placeholders::_1));
       }
 
     private:
       rclcpp_action::Client<Movement>::SharedPtr action_client_;
       GoalHandleMovement::SharedPtr goal_handle_;
       rclcpp::Subscription<geometry_msgs::msg::Pose2D>::SharedPtr goal_sub_;
+      rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr cancel_sub_;
       std::shared_ptr<tf2_ros::StaticTransformBroadcaster> tf_static_broadcaster_;
       double desired_x_;
       double desired_y_;
       double desired_theta_;
       bool cancel_sent_;
+
+      void cancel_goal_callback(const std_msgs::msg::Bool::SharedPtr msg)
+      {
+        if (!msg->data) return;
+        if (!goal_handle_ || cancel_sent_) {
+          RCLCPP_WARN(this->get_logger(), "No active goal to cancel");
+          return;
+        }
+        cancel_sent_ = true;
+        RCLCPP_INFO(this->get_logger(), "Cancelling goal on user request...");
+        action_client_->async_cancel_goal(goal_handle_);
+      }
 
       void goal_input_callback(const geometry_msgs::msg::Pose2D::SharedPtr msg)
       {

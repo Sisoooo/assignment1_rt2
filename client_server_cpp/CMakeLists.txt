@@ -14,6 +14,7 @@ find_package(actions_env REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(rclcpp_components REQUIRED)
+find_package(std_msgs REQUIRED)
 
 add_library(movement_server SHARED src/movement_server.cpp)
 add_library(movement_client SHARED src/movement_client.cpp)
@@ -35,6 +36,7 @@ ament_target_dependencies(movement_client
   rclcpp_components
   actions_env
   geometry_msgs
+  std_msgs
   tf2
   tf2_ros
 )
@@ -43,6 +45,7 @@ add_executable(movement_ui src/movement_ui.cpp)
 ament_target_dependencies(movement_ui
   rclcpp
   geometry_msgs
+  std_msgs
 )
 
 rclcpp_components_register_node(movement_server
