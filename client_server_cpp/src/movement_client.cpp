@@ -11,6 +11,7 @@
 #include "geometry_msgs/msg/pose2_d.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "tf2/LinearMath/Quaternion.hpp"
 #include "tf2_ros/static_transform_broadcaster.hpp"
 
@@ -34,6 +35,8 @@ namespace client_server_cpp{
         cancel_sub_ = this->create_subscription<std_msgs::msg::Bool>(
           "cancel_goal", 10,
           std::bind(&MovementClient::cancel_goal_callback, this, std::placeholders::_1));
+
+        status_pub_ = this->create_publisher<std_msgs::msg::String>("goal_status", 10);
       }
 
     private:
@@ -41,6 +44,7 @@ namespace client_server_cpp{
       GoalHandleMovement::SharedPtr goal_handle_;
       rclcpp::Subscription<geometry_msgs::msg::Pose2D>::SharedPtr goal_sub_;
       rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr cancel_sub_;
+      rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
       std::shared_ptr<tf2_ros::StaticTransformBroadcaster> tf_static_broadcaster_;
       double desired_x_;
       double desired_y_;
@@ -137,8 +141,10 @@ namespace client_server_cpp{
 
         if ((desired_x_ > 10.0 || desired_x_ < -10.0) || (desired_y_ > 10.0 || desired_y_ < -10.0)) {
           cancel_sent_ = true;
-          RCLCPP_WARN(this->get_logger(), "Goal position is outside the given environment, cancelling goal...");
           auto cancel_future = action_client_->async_cancel_goal(goal_handle_);
+          auto status_msg = std_msgs::msg::String();
+          status_msg.data = "Goal canceled: target position is outside the simulation environment.";
+          status_pub_->publish(status_msg);
         }
       }
 

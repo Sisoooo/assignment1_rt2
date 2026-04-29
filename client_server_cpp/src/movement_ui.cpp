@@ -6,6 +6,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose2_d.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/string.hpp"
 
 int main(int argc, char ** argv)
 {
@@ -13,6 +14,11 @@ int main(int argc, char ** argv)
   auto node = std::make_shared<rclcpp::Node>("movement_ui");
   auto goal_pub = node->create_publisher<geometry_msgs::msg::Pose2D>("goal_input", 10);
   auto cancel_pub = node->create_publisher<std_msgs::msg::Bool>("cancel_goal", 10);
+  auto status_sub = node->create_subscription<std_msgs::msg::String>(
+    "goal_status", 10,
+    [](const std_msgs::msg::String::SharedPtr msg) {
+      std::cout << "\n[INFO] " << msg->data << "\n" << std::flush;
+    });
 
   // Spin in a background thread so callbacks are processed while we prompt
   std::thread spin_thread([&node]() {
