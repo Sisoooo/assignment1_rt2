@@ -138,7 +138,7 @@ namespace client_server_cpp{
         if (cancel_sent_ || !goal_handle_) {
           return;
         }
-
+        // Automatic goal cancellation if outside the Gazebo simulation environment bounds
         if ((desired_x_ > 10.0 || desired_x_ < -10.0) || (desired_y_ > 10.0 || desired_y_ < -10.0)) {
           cancel_sent_ = true;
           auto cancel_future = action_client_->async_cancel_goal(goal_handle_);
@@ -148,6 +148,7 @@ namespace client_server_cpp{
         }
       }
 
+      // Final result reported with goal status and final position
       void result_callback(const GoalHandleMovement::WrappedResult & result)
       {
         switch (result.code) {
